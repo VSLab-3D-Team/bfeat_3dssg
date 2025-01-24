@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from torch.nn.utils.clip_grad import clip_grad_norm_
 from dataset.database import SSGCMFeatDataset
 from model.frontend.pointnet import PointNetEncoder
-from model.loss import NegativeCosineSimilarity
+# from model.loss import NegativeCosineSimilarity
 from lightly.loss.ntx_ent_loss import NTXentLoss
 from model.frontend.dgcnn import DGCNN
 from config import config_system
@@ -64,8 +64,8 @@ def train(rank, world_size):
     sampler = DistributedSampler(t_dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True)
     train_loader = DataLoader(t_dataset, batch_size=bsz, sampler=sampler)
     
-    v_dataset = SSGCMFeatDataset(split="validation_scans", use_rgb=True, use_normal=True, device=rank)
-    v_loader = DataLoader(v_dataset, batch_size=bsz, shuffle=True, drop_last=True)
+    # v_dataset = SSGCMFeatDataset(split="validation_scans", use_rgb=True, use_normal=True, device=rank)
+    # v_loader = DataLoader(v_dataset, batch_size=bsz, shuffle=True, drop_last=True)
     
     model, _ = clip.load("ViT-B/32", device=rank)
     model = model.eval()
@@ -104,7 +104,6 @@ def train(rank, world_size):
             data_t1, data_t2, rgb_img, text_feat = \
                 data_t1.to(rank), data_t2.to(rank), rgb_img.to(rank).float(), text_feat.to(rank)
             batch_size = data_t1.size()[0]
-            # , 
             
             with torch.no_grad():
                 rgb_feat = model.encode_image(rgb_img).to(rank).float()
@@ -144,29 +143,6 @@ def train(rank, world_size):
         if rank == 0:
             outstr = 'Train %d, loss: %.6f' % (epoch, train_losses.avg)
             io.cprint(outstr)  
-            
-            feats_val = []
-            labels_val = []
-            ddp_model.eval()
-            for i, (data_v1, _, _, _, label) in enumerate(v_loader):
-                labels = list(map(lambda x: x[0], label.numpy().tolist()))
-                data = data_v1.permute(0, 2, 1).to(rank)
-                with torch.no_grad():
-                    feats = ddp_model(data)[2]
-                feats = feats.detach().cpu().numpy()
-                for feat in feats:
-                    feats_val.append(feat)
-                labels_val += labels
-
-            feats_val = np.array(feats_val)
-            labels_val = np.array(labels_val)
-            tN = int((feats_val.shape[0]) * 0.7)
-            
-            model_tl = SVC(C = 0.1, kernel ='linear')
-            model_tl.fit(feats_val[:tN], labels_val[:tN])
-            test_accuracy = model_tl.score(feats_val[tN:], labels_val[tN:])
-            wandb_log['Linear Accuracy'] = test_accuracy
-            print(f"Linear Accuracy : {test_accuracy}")
             
             if train_losses.avg < best_loss:
                 best_loss = train_losses.avg

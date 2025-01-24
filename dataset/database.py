@@ -9,6 +9,7 @@ import clip
 import h5py
 from glob import glob
 from tqdm import tqdm
+import pickle
 
 class SSGCMFeatDataset(data.Dataset):
     def __init__(self, 
@@ -26,17 +27,20 @@ class SSGCMFeatDataset(data.Dataset):
         self.use_rgb = use_rgb
         self.use_normal = use_normal
         self.obj_file_list = PREPROCESS_PATH if split == "train_scans" else PREPROCESS_PATH + "_val"
+        self.mode = "train" if split == "train_scans" else "validation"
         self.n_pts = self.mconfig["num_points_union"]
         self.device = device
         _, self.preprocess = clip.load("ViT-B/32", device=self.device)
         
-        self.obj_h5_list = glob(f"{self.obj_file_list}/*/*/*.h5")
-        self.__remove_small()
+        # Read directly from h5py
+        # self.obj_h5_list = glob(f"{self.obj_file_list}/*-*-*-*-*/*/*.h5")
+        # self.__remove_small()
+        self.obj_bin_list = glob(f"{PREPROCESS_PATH}/final_objs_{self.mode}/*.pkl")
         
         print("Getting h5py object files... please wait...")
-        self.obj_data_list = [ 
-            self.__read_compressed_file(_p) for _p in tqdm(self.obj_h5_list, total=len(self.obj_h5_list)) 
-        ]
+        self.obj_data_list = []
+        for _p in tqdm(self.obj_bin_list, total=len(self.obj_bin_list)):
+            self.obj_data_list.extend(self.__read_compressed_bin_file(_p))
         
         # All activated on training
         self.dim_pts = 3
@@ -70,19 +74,36 @@ class SSGCMFeatDataset(data.Dataset):
         return points
     
     def __len__(self):
-        return len(self.obj_h5_list)
+        return len(self.obj_data_list)
     
     def __to_torch(self, x):
         return torch.from_numpy(np.array(x, dtype=np.float32)).to(self.device)
     
-    def __read_compressed_file(self, _path: str):
+    def __read_compressed_bin_file(self, _path: str):
+        obj_data = []
+        with open(_path, "rb") as f:
+            obj = pickle.load(f)
+            for con in obj:
+                _data = {}
+                _data["obj_point"] = self.__to_torch(con["obj_point"])
+                if self.mode == "train":
+                    _data["mv_rgb"] = [self.preprocess(con["mv_rgb"][0])]
+                else :
+                    _data["mv_rgb"] = []
+                _data["instance_id"] = con["instance_id"]
+                _data["instance_name"] = con["instance_name"]
+                obj_data.append(_data)
+        return obj_data
+    
+    def __read_compressed_h5_file(self, _path: str):
         _data = {}
         with h5py.File(_path, "r") as f:
             pts = self.__to_torch(f["obj_point"])
             _data["obj_point"] = self.__random_sample(pts)
             _data["mv_rgb"] = []
-            rgb = Image.fromarray(np.array(f["rgb_view_0"], dtype=np.uint8)).transpose(Image.ROTATE_270)
-            _data["mv_rgb"].append(self.preprocess(rgb))
+            if self.split == "train_scans":
+                rgb = Image.fromarray(np.array(f["rgb_view_0"], dtype=np.uint8)).transpose(Image.ROTATE_270)
+                _data["mv_rgb"].append(self.preprocess(rgb))
             # For now, Single image is used
             # rgb_keys = [ x for x in list(f.keys()) if x.startswith("rgb_view") ]
             # for k in rgb_keys:
@@ -118,11 +139,13 @@ class SSGCMFeatDataset(data.Dataset):
         - 25/01/23: First Experiment, Single Image view
         - ??/??/??: TODO: Multi-View pair settings
         """
-        # obj_path = 
         obj_data = self.obj_data_list[index] # self.__read_compressed_file(obj_path)
         
         obj_pos_1 = self.__data_augmentation(obj_data["obj_point"])
         obj_pos_2 = self.__data_augmentation(obj_data["obj_point"])
-        
         text_feature = clip.tokenize(f"A point cloud of a {obj_data['instance_name']}").to(self.device)
-        return obj_pos_1, obj_pos_2, obj_data["mv_rgb"][0], text_feature, obj_data["instance_id"]
+        
+        if self.split == "train_scans":    
+            return obj_pos_1, obj_pos_2, obj_data["mv_rgb"][0], text_feature, obj_data["instance_id"]
+        else:
+            return obj_pos_1, obj_pos_2, text_feature, obj_data["instance_id"]
