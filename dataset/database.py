@@ -57,13 +57,14 @@ class SSGCMFeatDataset(data.Dataset):
     def __to_torch(self, x):
         return torch.from_numpy(np.array(x, dtype=np.float32)).to(self.device)
     
-    def __read_compressed_file(self, _path):
+    def __read_compressed_file(self, _path: str):
         _data = {}
         with h5py.File(_path, "r") as f:
             _data["obj_point"] = self.__to_torch(f["obj_point"])
             _data["mv_rgb"] = []
-            for i in range(5):
-                _data["mv_rgb"].append(self.__to_torch(f[f"rgb_view_{i}"]))
+            rgb_keys = [ x for x in list(f.keys()) if x.startswith("rgb_view") ]
+            for k in rgb_keys:
+                _data["mv_rgb"].append(self.__to_torch(f[k]))
             _data["instance_id"] = f.attrs["semantic_id"]
             _data["instance_name"] = f.attrs["semantic_name"]
         return _data
