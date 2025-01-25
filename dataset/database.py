@@ -148,4 +148,4 @@ class SSGCMFeatDataset(data.Dataset):
         if self.split == "train_scans":    
             return obj_pos_1, obj_pos_2, obj_data["mv_rgb"][0], text_feature, obj_data["instance_id"]
         else:
-            return obj_pos_1, obj_pos_2, text_feature, obj_data["instance_id"]
+            return obj_pos_1, obj_pos_2, obj_data['instance_name'], obj_data["instance_id"]

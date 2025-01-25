@@ -1,4 +1,5 @@
 checkpoints/
 wandb/
 experiment/result
-__pycache__
+__pycache__/
+experiment/results/
