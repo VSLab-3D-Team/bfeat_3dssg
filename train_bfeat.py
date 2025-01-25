@@ -147,7 +147,7 @@ def train(rank, world_size):
             if train_losses.avg < best_loss:
                 best_loss = train_losses.avg
                 print('==> Saving Best Model...')
-                save_file = os.path.join(f'checkpoints/{args.exp_name}/models/', 'best_model.pth'.format(epoch=epoch))
+                save_file = os.path.join(f'checkpoints/{exp_name}/models/', 'best_model.pth'.format(epoch=epoch))
                 torch.save(encoder_model.state_dict(), save_file)
     
             if epoch % save_interval == 0:
