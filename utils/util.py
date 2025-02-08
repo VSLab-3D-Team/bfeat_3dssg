@@ -23,7 +23,11 @@ def read_txt_to_list(file):
             output.append(entry) 
     return output
 
-            
+def to_gpu(*tensors):
+    device = "cuda"
+    c_tensor = [ t.to(device) for t in tensors ]
+    return c_tensor
+
 
 def read_classes(read_file):
     obj_classes = [] 

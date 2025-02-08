@@ -5,17 +5,16 @@ from torch.utils.data import DataLoader
 from torch.nn.utils.clip_grad import clip_grad_norm_
 from dataset.database import SSGCMFeatDataset
 from model.frontend.pointnet import PointNetEncoder
-# from model.loss import NegativeCosineSimilarity
+from model.loss import MultiLabelInfoNCELoss
 from lightly.loss.ntx_ent_loss import NTXentLoss
 from model.frontend.dgcnn import DGCNN
 from config import config_system
 import numpy as np
 import wandb
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, CyclicLR
 from datetime import datetime
 import torch.optim as optim
 from utils.logger import AverageMeter, IOStream
-from sklearn.svm import SVC
 
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -107,7 +106,7 @@ def train(rank, world_size):
             
             with torch.no_grad():
                 rgb_feat = model.encode_image(rgb_img).to(rank).float()
-                _ = model.encode_text(text_feat.squeeze(1))
+                text_feat = model.encode_text(text_feat.squeeze(1)).to(rank).float()
             
             optimizer.zero_grad()
             data = torch.cat((data_t1, data_t2))
@@ -119,7 +118,7 @@ def train(rank, world_size):
             
             loss_imid = criterion(point_t1_feats, point_t2_feats)        
             point_feats = torch.stack([point_t1_feats, point_t2_feats]).mean(dim=0)
-            loss_cmid = criterion(point_feats, rgb_feat.squeeze(1))
+            loss_cmid = criterion(point_feats, rgb_feat.squeeze(1)) + criterion(point_feats, text_feat)
             
             total_loss = loss_imid + loss_cmid
             total_loss.backward()
@@ -130,7 +129,7 @@ def train(rank, world_size):
             train_imid_losses.update(loss_imid.item(), batch_size)
             train_cmid_losses.update(loss_cmid.item(), batch_size)
             
-            if i % log_interval == 0:
+            if epoch % log_interval == 0:
                 print('Epoch (%d), Batch(%d/%d), loss: %.6f, imid loss: %.6f, cmid loss: %.6f ' % (
                     epoch, i, 
                     len(train_loader), train_losses.avg, 

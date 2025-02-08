@@ -26,7 +26,8 @@ dataset_config = {
   "max_edges": -1,
   "drop_edge": 0.5,
   "drop_edge_eval": 0.0,
-  "use_object_weight": False
+  "use_object_weight": False,
+  "top_k_img_num": 5
 }
 
 model_config = {
@@ -76,17 +77,17 @@ config_system = {
   "DEVICE": "cuda",
   "SEED": 2025,
   "MAX_EPOCHES": 10000,
-  "LR": 0.001,
+  "LR": 0.01,
   "W_DECAY": False,
   "AMSGRAD":False,
   "LR_SCHEDULE": "Cosine",
   "GPU": [0, 1],
-  "SAVE_INTERVAL": 20,
+  "SAVE_INTERVAL": 100,
   "VALID_INTERVAL": 10,
-  "LOG_INTERVAL": 1,
+  "LOG_INTERVAL": 5,
   "LOG_IMG_INTERVAL": 100,
   "WORKERS": 4,
-  "Batch_Size": 256, 
+  "Batch_Size": 512, 
   "update_2d": False,
   "EVAL": False,
   "_EDGE_BUILD_TYPE": ["FC", "KNN"],
