@@ -210,8 +210,6 @@ def train(rank): # , world_size
         # if rank == 0:
         if epoch % evaluate_interval:
             obj_topk, val_metric = validation(validation_loader, encoder_model, text_cls_matrix.detach())
-            del v_dataset
-            del validation_loader
             wandb_log["Validation/Obj_R@1"] = obj_topk["Validation/Obj_R@1"]
             wandb_log["Validation/Obj_R@5"] = obj_topk["Validation/Obj_R@5"]
             wandb_log["Validation/Obj_R@10"] = obj_topk["Validation/Obj_R@10"]
