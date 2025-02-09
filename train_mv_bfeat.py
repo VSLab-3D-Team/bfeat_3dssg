@@ -55,9 +55,9 @@ def validation(validation_loader:DataLoader, model: torch.nn.Module, text_cls_ma
     val_obj_10 = AverageMeter(name="Validation Obj R@10")
     model.eval()
     with torch.no_grad():
-        for i, (data_obj, text_feat, gt_label) in enumerate(validation_loader):
-            data_obj, text_feat, gt_label = to_gpu(
-                data_obj, text_feat, gt_label
+        for i, (data_obj, _, gt_label) in enumerate(validation_loader):
+            data_obj, gt_label = to_gpu(
+                data_obj, gt_label
             )
             data = data.transpose(2, 1).contiguous()
             point_feats, _, _ = model(data)
