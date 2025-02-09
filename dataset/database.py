@@ -153,16 +153,15 @@ class SSGCMFeatDataset(data.Dataset):
         target_text_id = torch.zeros(len(self.obj_cls_list), dtype=torch.float32)
         target_text_id[text_id] = 1.
         
-        ## Zero Masking for variable length Multi-View image
-        N, C, H, W = obj_data["mv_rgb"].shape
-        zero_mask = torch.ones((self.top_k_num), dtype=torch.float32)
-        if N < self.top_k_num:
-            _d = self.top_k_num - N
-            zero_img = torch.zeros((_d, C, H, W), dtype=torch.float32)
-            obj_data["mv_rgb"] = torch.cat([ obj_data["mv_rgb"], zero_img ], dim=0)
-            zero_mask[N:] = 0.
-        
         if self.split == "train_scans":    
+            ## Zero Masking for variable length Multi-View image
+            N, C, H, W = obj_data["mv_rgb"].shape
+            zero_mask = torch.ones((self.top_k_num), dtype=torch.float32)
+            if N < self.top_k_num:
+                _d = self.top_k_num - N
+                zero_img = torch.zeros((_d, C, H, W), dtype=torch.float32)
+                obj_data["mv_rgb"] = torch.cat([ obj_data["mv_rgb"], zero_img ], dim=0)
+                zero_mask[N:] = 0.
             return obj_pos_1, obj_pos_2, obj_data["mv_rgb"], zero_mask, text_feature, target_text_id
         else:
             return obj_data["obj_point"], obj_data['instance_name'], target_text_id
