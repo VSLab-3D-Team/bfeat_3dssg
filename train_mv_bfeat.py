@@ -56,10 +56,8 @@ def validation(validation_loader:DataLoader, model: torch.nn.Module, text_cls_ma
     model.eval()
     with torch.no_grad():
         for i, (data_obj, _, gt_label) in enumerate(validation_loader):
-            data_obj, gt_label = to_gpu(
-                data_obj, gt_label
-            )
-            data = data.transpose(2, 1).contiguous()
+            data_obj, gt_label = to_gpu(data_obj, gt_label)
+            data = data_obj.transpose(2, 1).contiguous()
             point_feats, _, _ = model(data)
             obj_topk_list = consine_classification(text_cls_matrix, point_feats, gt_label)
             val_obj_1.update(obj_topk_list[0])
