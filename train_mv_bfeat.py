@@ -7,6 +7,7 @@ from torch.nn.utils.clip_grad import clip_grad_norm_
 from dataset.database import SSGCMFeatDataset
 from model.frontend.pointnet import PointNetEncoder
 from model.loss import IntraModalBarlowTwinLoss, SupervisedCrossModalInfoNCE, CrossModalInfoNCE
+from lightly.loss.ntx_ent_loss import NTXentLoss
 from model.frontend.dgcnn import DGCNN
 from config import config_system, dataset_config
 from einops import rearrange
@@ -126,9 +127,15 @@ def train(rank): # , world_size
     # ddp_model = DDP(encoder_model, device_ids=[rank]) 
     optimizer = optim.Adam(encoder_model.parameters(), lr=lr, weight_decay=1e-6)
     
-    lr_scheduler = CosineAnnealingLR(optimizer, T_max=epoches, eta_min=0, last_epoch=-1)
+    lr_scheduler = CyclicLR( # CosineAnnealingLR(optimizer, T_max=epoches, eta_min=0, last_epoch=-1)
+        optimizer, base_lr=lr / 10, 
+        step_size_up=epoches, max_lr=lr * 5, 
+        gamma=0.8, mode='exp_range', cycle_momentum=False
+    )
     intra_criterion = IntraModalBarlowTwinLoss()
-    cross_criterion = SupervisedCrossModalInfoNCE(device, temperature=0.1)
+    cm_visual_criterion = CrossModalInfoNCE(device, temperature=0.07) # magnify temperature to 0.2
+    cm_text_criterion = CrossModalInfoNCE(device, temperature=0.07) 
+    # NTXentLoss(temperature = 0.07).to(device) # For NX-Tent loss, calculate self-negativity.
     n_iters = len(train_loader)
     
     best_val = -987654321
@@ -141,7 +148,8 @@ def train(rank): # , world_size
         progbar = Progbar(n_iters, width=40, stateful_metrics=['Misc/epo', 'Misc/it'])
         train_losses = AverageMeter(name="Train Total Loss")
         train_imid_losses = AverageMeter(name="Train Intra-Modal Loss")
-        train_cmid_losses = AverageMeter(name="Train Cross-Modal Loss")
+        train_cm_visual_losses = AverageMeter(name="Train 3D-Visual Cross-Modal Loss")
+        train_cm_text_losses = AverageMeter(name="Train 3D-Text Cross-Modal Loss")
         wandb_log = {}
         for i, (data_t1, data_t2, rgb_imgs, zero_mask, text_feat, gt_label) in enumerate(train_loader):
             data_t1, data_t2, rgb_imgs, zero_mask, text_feat, gt_label = \
@@ -161,7 +169,6 @@ def train(rank): # , world_size
                     rgb_feat_list.append(rgb_feat)
                 text_feat = model.encode_text(text_feat.squeeze(1)).to(device).float()
                 rgb_feats = torch.cat(rgb_feat_list, dim=1)
-                rgb_feat_list.clear()
             
             optimizer.zero_grad()
             data = torch.cat((data_t1, data_t2))
@@ -173,29 +180,35 @@ def train(rank): # , world_size
             
             loss_imbt = intra_criterion(point_t1_feats, point_t2_feats)        
             point_feats = torch.stack([point_t1_feats, point_t2_feats]).mean(dim=0)
-            loss_cmnce = cross_criterion(point_feats, rgb_feats, gt_label, zero_mask) \
-                + cross_criterion(point_feats, text_feat, gt_label)
+            loss_cm_visual = cm_visual_criterion(point_feats, rgb_feats, zero_mask)
+            loss_cm_text = cm_text_criterion(point_feats, text_feat)
+            # gt_label must be added
             
-            total_loss = loss_imbt + loss_cmnce
+            total_loss = 0.1 * loss_imbt + loss_cm_visual + loss_cm_text
             total_loss.backward()
-            clip_grad_norm_(encoder_model.parameters(), 0.5)
+            # clip_grad_norm_(encoder_model.parameters(), 0.5)
             optimizer.step()
             
             train_losses.update(total_loss.detach().cpu().item(), batch_size)
             train_imid_losses.update(loss_imbt.detach().cpu().item(), batch_size)
-            train_cmid_losses.update(loss_cmnce.detach().cpu().item(), batch_size)
+            train_cm_visual_losses.update(loss_cm_visual.detach().cpu().item(), batch_size)
+            train_cm_text_losses.update(loss_cm_text.detach().cpu().item(), batch_size)
             
             # if rank == 0:
             t_log = [
                 ("train/total_loss", total_loss.detach().cpu().item()),
                 ("train/imid_loss", loss_imbt.detach().cpu().item()),
-                ("train/cmid_loss", loss_cmnce.detach().cpu().item()),
+                ("train/cm_visual_loss", loss_cm_visual.detach().cpu().item()),
+                ("train/cm_text_loss", loss_cm_text.detach().cpu().item()),
                 ("Misc/epo", int(epoch)),
                 ("Misc/it", int(i)),
                 ("lr", lr_scheduler.get_last_lr()[0])
             ]
             if epoch % log_interval == 0:
                 obj_topk_list = consine_classification(text_cls_matrix.detach(), point_feats.detach(), gt_label)
+                wandb_log["Train/Obj_R@1"] = obj_topk_list[0]
+                wandb_log["Train/Obj_R@5"] = obj_topk_list[1]
+                wandb_log["Train/Obj_R@10"] = obj_topk_list[2]
                 logs = [
                     ("train/Obj_R1", obj_topk_list[0]),
                     ("train/Obj_R5", obj_topk_list[1]),
@@ -211,7 +224,7 @@ def train(rank): # , world_size
             wandb_log["Validation/Obj_R@1"] = obj_topk["Validation/Obj_R@1"]
             wandb_log["Validation/Obj_R@5"] = obj_topk["Validation/Obj_R@5"]
             wandb_log["Validation/Obj_R@10"] = obj_topk["Validation/Obj_R@10"]
-            if val_metric < best_val:
+            if val_metric > best_val:
                 best_val = val_metric
                 print('==> Saving Best Model...')
                 save_file = os.path.join(f'checkpoints/{exp_name}/models/', 'best_model.pth'.format(epoch=epoch))
@@ -221,10 +234,12 @@ def train(rank): # , world_size
             print('==> Saving...')
             save_file = os.path.join(f'checkpoints/{exp_name}/models/', 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
             torch.save(encoder_model.state_dict(), save_file)
-            
+        
+        wandb_log["Train/Learning_Rate"] = lr_scheduler.get_last_lr()[0]
         wandb_log['Train/Loss'] = train_losses.avg
         wandb_log['Train/IMBT_Loss'] = train_imid_losses.avg
-        wandb_log['Train/CMInfoNCE_Loss'] = train_cmid_losses.avg
+        wandb_log['Train/CM_Visual_Loss'] = train_cm_visual_losses.avg
+        wandb_log['Train/CM_Text_Loss'] = train_cm_text_losses.avg
         wandb.log(wandb_log)
     
     dist.destroy_process_group()

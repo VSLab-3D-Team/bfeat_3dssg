@@ -82,7 +82,7 @@ config_system = {
   "AMSGRAD":False,
   "LR_SCHEDULE": "Cosine",
   "GPU": [0, 1],
-  "SAVE_INTERVAL": 100,
+  "SAVE_INTERVAL": 20,
   "VALID_INTERVAL": 10,
   "LOG_INTERVAL": 5,
   "LOG_IMG_INTERVAL": 100,

@@ -5,7 +5,6 @@ from torch.utils.data import DataLoader
 from torch.nn.utils.clip_grad import clip_grad_norm_
 from dataset.database import SSGCMFeatDataset
 from model.frontend.pointnet import PointNetEncoder
-from model.loss import MultiLabelInfoNCELoss
 from lightly.loss.ntx_ent_loss import NTXentLoss
 from model.frontend.dgcnn import DGCNN
 from config import config_system

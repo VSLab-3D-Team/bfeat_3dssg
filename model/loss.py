@@ -107,6 +107,10 @@ class SupervisedCrossModalInfoNCE(nn.Module):
         
 
 class CrossModalInfoNCE(nn.Module):
+    """
+    Get cross-modality wo/ self-contrastive settings.
+    Calculate only 3D-Text Cross-Modality
+    """
     def __init__(self, device, temperature=0.07):
         super(CrossModalInfoNCE, self).__init__()
         self.device = device
@@ -140,7 +144,6 @@ class CrossModalInfoNCE(nn.Module):
         # z_c: 
         #   - B X K X N_feat if Image 
         #   - B X N_feat     if Text
-        # gt_label: B X C
         # mask: B X K \in {0, 1}
         B = z_p.shape[0]
         z_p = F.normalize(z_p, dim=-1)
@@ -148,11 +151,12 @@ class CrossModalInfoNCE(nn.Module):
         positive_mask = torch.eye(B).float().to(self.device)
         negative_mask = (~(positive_mask.bool())).float().to(self.device)
         
-        if not mask: # if zero-mask is given, cross-modal loss w. RGB Image
+        if not mask == None: # if zero-mask is given, cross-modal loss w. RGB Image
             K = z_c.shape[1]
-            positive_mask.unsqueeze(2).repeat(1, 1, K)
+            negative_mask = negative_mask.unsqueeze(2).repeat(1, 1, K)
+            positive_mask = positive_mask.unsqueeze(2).repeat(1, 1, K)
             valid_mask = mask.unsqueeze(1).repeat(1, B, 1)
-            c_sim = torch.einsum('bn,bkn->bbk', z_p, z_c) / self.temperature
+            c_sim = torch.einsum('bn,mkn->bmk', z_p, z_c) / self.temperature
             exp_sim_mat = torch.exp(c_sim)  # B X B X K
             
             # Masking valid RGB Image which exists
@@ -170,11 +174,87 @@ class CrossModalInfoNCE(nn.Module):
             neg_sim = exp_sim_mat * negative_mask
             l_neg_term = neg_sim.sum(1, keepdim=True) # B
             l_bp = exp_sim_mat / l_neg_term.repeat(1, B)
-            l_bp = -torch.load(l_bp) * positive_mask
+            l_bp = -torch.log(l_bp) * positive_mask
             loss_bt = self.__text_nonzero_mean(l_bp)
             return torch.mean(loss_bt)
-            
+
+class CrossModalNXTent(nn.Module):
+    """
+    Get cross-modality wo/ self-contrastive settings.
+    Calculate only 3D-Text Cross-Modality
+    """
+    def __init__(self, device, temperature=0.07):
+        super(CrossModalInfoNCE, self).__init__()
+        self.device = device
+        self.temperature = temperature
     
+    def __nonzero_mean(self, x: torch.Tensor):
+        """
+        Crazy Indexing for accurate mean
+        Holy Shit
+        """
+        non_zero_mask = x != 0
+        sum_non_zero = x.sum(dim=2, keepdim=True).sum(dim=1, keepdim=True) # B X 1 X 1
+        count_non_zero = non_zero_mask.sum(dim=2, keepdim=True).sum(dim=1, keepdim=True) # B X 1 X 1
+        mean_non_zero = torch.where(count_non_zero > 0, sum_non_zero / count_non_zero, torch.zeros_like(sum_non_zero).to(self.device))
+        return mean_non_zero
+    
+    def __text_nonzero_mean(self, x: torch.Tensor):
+        non_zero_mask = x != 0
+        sum_non_zero = x.sum(dim=1, keepdim=True) # B X 1
+        count_non_zero = non_zero_mask.sum(dim=1, keepdim=True) # B X 1 
+        mean_non_zero = torch.where(count_non_zero > 0, sum_non_zero / count_non_zero, torch.zeros_like(sum_non_zero).to(self.device))
+        return mean_non_zero
+    
+    def forward(
+        self, 
+        z_p: torch.Tensor, 
+        z_c: torch.Tensor,  
+        mask: torch.Tensor = None
+    ):
+        # z_p: B X N_feat
+        # z_c: 
+        #   - B X K X N_feat if Image 
+        #   - B X N_feat     if Text
+        # mask: B X K \in {0, 1}
+        B = z_p.shape[0]
+        z_p = F.normalize(z_p, dim=-1)
+        z_c = F.normalize(z_c, dim=-1)
+        positive_mask = torch.eye(B).float().to(self.device)
+        negative_mask = (~(positive_mask.bool())).float().to(self.device)
+        
+        # Intra-Modal negative similarity 
+        pc_neg_sim = torch.mm('bn,mn->bm', z_p, z_p)
+        exp_pc_neg_sim = torch.exp(pc_neg_sim) * negative_mask
+        
+        if not mask == None: # if zero-mask is given, cross-modal loss w. RGB Image
+            K = z_c.shape[1]
+            negative_mask = negative_mask.unsqueeze(2).repeat(1, 1, K)
+            positive_mask = positive_mask.unsqueeze(2).repeat(1, 1, K)
+            valid_mask = mask.unsqueeze(1).repeat(1, B, 1)
+            c_sim = torch.einsum('bn,mkn->bmk', z_p, z_c) / self.temperature
+            exp_sim_mat = torch.exp(c_sim)  # B X B X K
+            
+            # Masking valid RGB Image which exists
+            exp_pc_neg_sim = exp_pc_neg_sim.unsqueeze(2).repeat(1, 1, K)
+            neg_sim = exp_sim_mat * valid_mask + exp_pc_neg_sim * valid_mask # B X B X K, non-zero w. negative sample
+            l_neg_term = neg_sim.sum(1).sum(1) # B
+            l_bp = exp_sim_mat / l_neg_term.unsqueeze(1).unsqueeze(1).repeat(1, B, K) # B X B X K
+            l_bp = -torch.log(l_bp) * positive_mask * valid_mask
+            loss_br = self.__nonzero_mean(l_bp)
+            return torch.mean(loss_br)
+
+        else: # otherwise, cross-modal loss w. Text
+            c_sim = torch.mm(z_p, z_c.T) / self.temperature # B X B
+            exp_sim_mat = torch.exp(c_sim)  # B X B X K
+            
+            neg_sim = exp_sim_mat + exp_pc_neg_sim
+            l_neg_term = neg_sim.sum(1, keepdim=True) # B
+            l_bp = exp_sim_mat / l_neg_term.repeat(1, B)
+            l_bp = -torch.log(l_bp) * positive_mask
+            loss_bt = self.__text_nonzero_mean(l_bp)
+            return torch.mean(loss_bt)
+
 class IntraModalBarlowTwinLoss(nn.Module):
     def __init__(self, _lambda=5e-3):
         super(IntraModalBarlowTwinLoss, self).__init__()

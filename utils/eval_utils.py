@@ -24,9 +24,10 @@ def consine_classification(
     obj_feat: torch.Tensor,   # B X N_feat
     obj_gt: torch.Tensor
 ):
-    cls_matrix = F.normalize(cls_matrix, dim=-1)
-    obj_feat = F.normalize(obj_feat, dim=-1)
+    # cls_matrix = F.normalize(cls_matrix, dim=-1)
+    # obj_feat = F.normalize(obj_feat, dim=-1)
     sim_matrix = torch.mm(obj_feat, cls_matrix.T) # B X C
-    obj_pred = (sim_matrix + 1) * 0.5
+    # obj_pred = (sim_matrix + 1) * 0.5
+    obj_pred = F.softmax(sim_matrix, dim=1)
     obj_label = torch.argmax(obj_gt, dim=1).long()
     return evaluate_topk_object(obj_pred, obj_label, topk=11)
