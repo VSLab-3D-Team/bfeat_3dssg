@@ -282,3 +282,36 @@ class IntraModalBarlowTwinLoss(nn.Module):
         # 4. 최종 손실 계산
         loss = invariance_term + self._lambda * redundancy_term
         return loss
+    
+class SupervisedIntraModalBarlowTwinLoss(nn.Module):
+    def __init__(self, device, _lambda=5e-3):
+        super(SupervisedIntraModalBarlowTwinLoss, self).__init__()
+        self._lambda = _lambda
+        self.device = device
+        
+    def forward(
+        self, 
+        z_a: torch.Tensor, 
+        z_b: torch.Tensor,
+        gt_label: torch.Tensor
+    ):
+        # z_a = F.normalize(z_a, dim=-1)
+        # z_b = F.normalize(z_b, dim=-1)
+        labels = torch.argmax(gt_label, dim=1, keepdim=True)
+        positive_mask = (labels == labels.T).float().to(self.device)
+        negative_mask = (~(labels == labels.T)).float().to(self.device)
+        
+        z_a = (z_a - z_a.mean(dim=0)) / z_a.std(dim=0)
+        z_b = (z_b - z_b.mean(dim=0)) / z_b.std(dim=0)
+        # 2. 크로스 상관행렬 C 계산 (DxD 크기, D는 임베딩 차원)
+        batch_size = z_a.size(0)
+        c = torch.mm(z_a.T, z_b) / batch_size  # 배치 크기로 나누어 평균 상관값 계산
+        # 3. 손실 함수 항목 계산
+        identity = torch.eye(c.size(0)).to(c.device)  # 단위 행렬 (대각선이 1인 행렬)
+        # - 대각선 요소를 1에 가깝게 만드는 불변성(invariance) 항
+        invariance_term = (c * positive_mask - 1).pow(2).sum()
+        # - 대각선 외 요소들을 0에 가깝게 만드는 중복 감소(redundancy reduction) 항
+        redundancy_term = ((c - positive_mask).pow(2).sum() - invariance_term)
+        # 4. 최종 손실 계산
+        loss = invariance_term + self._lambda * redundancy_term
+        return loss

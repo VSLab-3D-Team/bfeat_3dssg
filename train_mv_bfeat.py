@@ -19,10 +19,11 @@ from utils.logger import AverageMeter, Progbar
 from utils.util import read_txt_to_list, to_gpu
 from utils.eval_utils import consine_classification
 import clip
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
+# import torch.distributed as dist
+# import torch.multiprocessing as mp
+# from torch.nn.parallel import DistributedDataParallel as DDP
+# from torch.utils.data.distributed import DistributedSampler
+import numpy as np
 
 parser = argparse.ArgumentParser(description="Example script for argparse")
 parser.add_argument("--encoder", "-e", type=str, default="pointnet", choices=["pointnet", "dgcnn"])
@@ -51,9 +52,7 @@ def build_classifier(clip_model: clip.model, device):
 def validation(validation_loader:DataLoader, model: torch.nn.Module, text_cls_matrix: torch.Tensor):
     n_iters = len(validation_loader)
     progbar = Progbar(n_iters, width=40, stateful_metrics=['Misc/epo', 'Misc/it'])
-    val_obj_1 = AverageMeter(name="Validation Obj R@1")
-    val_obj_5 = AverageMeter(name="Validation Obj R@5")
-    val_obj_10 = AverageMeter(name="Validation Obj R@10")
+    topk_obj_list = np.array([])
     model.eval()
     with torch.no_grad():
         for i, (data_obj, _, gt_label) in enumerate(validation_loader):
@@ -61,20 +60,17 @@ def validation(validation_loader:DataLoader, model: torch.nn.Module, text_cls_ma
             data = data_obj.transpose(2, 1).contiguous()
             point_feats, _, _ = model(data)
             obj_topk_list = consine_classification(text_cls_matrix, point_feats, gt_label)
-            val_obj_1.update(obj_topk_list[0])
-            val_obj_5.update(obj_topk_list[1])
-            val_obj_10.update(obj_topk_list[2])
+            topk_obj_list = np.concatenate((topk_obj_list, obj_topk_list))
+            
+            eval_batch = [ 100 * (topk_obj_list <= i).sum() / len(topk_obj_list) for i in [1, 5, 10] ]
             logs = [
-                ("validation/Obj_R1", obj_topk_list[0]),
-                ("validation/Obj_R5", obj_topk_list[1]),
-                ("validation/Obj_R10", obj_topk_list[2]),
+                ("validation/Obj_R1", eval_batch[0]),
+                ("validation/Obj_R5", eval_batch[1]),
+                ("validation/Obj_R10", eval_batch[2]),
             ]
             progbar.add(1, values=logs)
-    return {
-        "Validation/Obj_R@1": val_obj_1.avg,
-        "Validation/Obj_R@5": val_obj_5.avg,
-        "Validation/Obj_R@10": val_obj_10.avg,
-    }, (val_obj_1.avg + val_obj_5.avg + val_obj_10.avg) / 3
+    obj_acc = [ 100 * (topk_obj_list <= i).sum() / len(topk_obj_list) for i in [1, 5, 10] ]
+    return obj_acc
     
 """
 Barlow Twin을 사용하는 방법론은 현 함수이다.
@@ -127,14 +123,15 @@ def train(rank): # , world_size
     # ddp_model = DDP(encoder_model, device_ids=[rank]) 
     optimizer = optim.Adam(encoder_model.parameters(), lr=lr, weight_decay=1e-6)
     
-    lr_scheduler = CyclicLR( # CosineAnnealingLR(optimizer, T_max=epoches, eta_min=0, last_epoch=-1)
-        optimizer, base_lr=lr / 10, 
-        step_size_up=epoches, max_lr=lr * 5, 
-        gamma=0.8, mode='exp_range', cycle_momentum=False
-    )
+    lr_scheduler = CosineAnnealingLR(optimizer, T_max=epoches, eta_min=0, last_epoch=-1)
+    # CyclicLR( # 
+    #     optimizer, base_lr=lr / 10, 
+    #     step_size_up=epoches, max_lr=lr * 5, 
+    #     gamma=0.8, mode='exp_range', cycle_momentum=False
+    # )
     intra_criterion = IntraModalBarlowTwinLoss()
-    cm_visual_criterion = CrossModalInfoNCE(device, temperature=0.07) # magnify temperature to 0.2
-    cm_text_criterion = CrossModalInfoNCE(device, temperature=0.07) 
+    cm_visual_criterion = SupervisedCrossModalInfoNCE(device, temperature=0.07) # magnify temperature to 0.2
+    cm_text_criterion = SupervisedCrossModalInfoNCE(device, temperature=0.07) 
     # NTXentLoss(temperature = 0.07).to(device) # For NX-Tent loss, calculate self-negativity.
     n_iters = len(train_loader)
     
@@ -151,6 +148,7 @@ def train(rank): # , world_size
         train_cm_visual_losses = AverageMeter(name="Train 3D-Visual Cross-Modal Loss")
         train_cm_text_losses = AverageMeter(name="Train 3D-Text Cross-Modal Loss")
         wandb_log = {}
+        topk_obj_list = np.array([])
         for i, (data_t1, data_t2, rgb_imgs, zero_mask, text_feat, gt_label) in enumerate(train_loader):
             data_t1, data_t2, rgb_imgs, zero_mask, text_feat, gt_label = \
                 data_t1.to(rank), \
@@ -180,8 +178,8 @@ def train(rank): # , world_size
             
             loss_imbt = intra_criterion(point_t1_feats, point_t2_feats)        
             point_feats = torch.stack([point_t1_feats, point_t2_feats]).mean(dim=0)
-            loss_cm_visual = cm_visual_criterion(point_feats, rgb_feats, zero_mask)
-            loss_cm_text = cm_text_criterion(point_feats, text_feat)
+            loss_cm_visual = cm_visual_criterion(point_feats, rgb_feats, gt_label, zero_mask)
+            loss_cm_text = cm_text_criterion(point_feats, text_feat, gt_label)
             # gt_label must be added
             
             total_loss = 0.1 * loss_imbt + loss_cm_visual + loss_cm_text
@@ -206,13 +204,15 @@ def train(rank): # , world_size
             ]
             if epoch % log_interval == 0:
                 obj_topk_list = consine_classification(text_cls_matrix.detach(), point_feats.detach(), gt_label)
-                wandb_log["Train/Obj_R@1"] = obj_topk_list[0]
-                wandb_log["Train/Obj_R@5"] = obj_topk_list[1]
-                wandb_log["Train/Obj_R@10"] = obj_topk_list[2]
+                topk_obj_list = np.concatenate((topk_obj_list, obj_topk_list))
+                eval_batch = [ 100 * (topk_obj_list <= i).sum() / len(topk_obj_list) for i in [1, 5, 10] ]
+                wandb_log["Train/Obj_R@1"] = eval_batch[0]
+                wandb_log["Train/Obj_R@5"] = eval_batch[1]
+                wandb_log["Train/Obj_R@10"] = eval_batch[2]
                 logs = [
-                    ("train/Obj_R1", obj_topk_list[0]),
-                    ("train/Obj_R5", obj_topk_list[1]),
-                    ("train/Obj_R10", obj_topk_list[2]),
+                    ("train/Obj_R1", eval_batch[0]),
+                    ("train/Obj_R5", eval_batch[1]),
+                    ("train/Obj_R10", eval_batch[2]),
                 ]
                 t_log += logs
             progbar.add(1, values=t_log)
@@ -220,10 +220,11 @@ def train(rank): # , world_size
         lr_scheduler.step()
         # if rank == 0:
         if epoch % evaluate_interval == 0:
-            obj_topk, val_metric = validation(validation_loader, encoder_model, text_cls_matrix.detach())
-            wandb_log["Validation/Obj_R@1"] = obj_topk["Validation/Obj_R@1"]
-            wandb_log["Validation/Obj_R@5"] = obj_topk["Validation/Obj_R@5"]
-            wandb_log["Validation/Obj_R@10"] = obj_topk["Validation/Obj_R@10"]
+            obj_topk = validation(validation_loader, encoder_model, text_cls_matrix.detach())
+            val_metric = sum(obj_topk) / 3.
+            wandb_log["Validation/Obj_R@1"] = obj_topk[0]
+            wandb_log["Validation/Obj_R@5"] = obj_topk[1]
+            wandb_log["Validation/Obj_R@10"] = obj_topk[2]
             if val_metric > best_val:
                 best_val = val_metric
                 print('==> Saving Best Model...')
@@ -242,7 +243,7 @@ def train(rank): # , world_size
         wandb_log['Train/CM_Text_Loss'] = train_cm_text_losses.avg
         wandb.log(wandb_log)
     
-    dist.destroy_process_group()
+    # dist.destroy_process_group()
 
 if __name__ == "__main__":
     __setup()

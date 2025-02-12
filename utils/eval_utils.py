@@ -15,8 +15,7 @@ def evaluate_topk_object(objs_pred, objs_target, topk):
                 break
             index += 1
         res.append(index)
-    top_k_obj = np.asarray(res)
-    return [ 100 * (top_k_obj <= i).sum() / len(top_k_obj) for i in [1, 5, 10] ]
+    return np.asarray(res)
 
 
 def consine_classification(
