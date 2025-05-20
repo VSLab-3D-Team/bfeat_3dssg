@@ -28,18 +28,10 @@ if __name__ == "__main__":
     
     with torch.no_grad():
         feat_per_labels = {}
-        for i, (data_t1, data_t2, text_feat, label) in enumerate(v_loader):
-            data_t1, data_t2 = \
-                    data_t1.to(device), data_t2.to(device)
-            batch_size = data_t1.size()[0]
-            
-            data = torch.cat((data_t1, data_t2))
+        for i, (data, text_feat, label) in enumerate(v_loader):
+            data = data.to(device)
             data = data.transpose(2, 1).contiguous()
-            point_feats, _, _ = encoder_model(data)
-            
-            point_t1_feats = point_feats[:batch_size, :]
-            point_t2_feats = point_feats[batch_size:, :]
-            z = torch.stack([point_t1_feats, point_t2_feats]).mean(dim=0)
+            z, _, _ = encoder_model(data)
             
             print(f"Processing {i}-th batch...")
             for idx, text in tqdm(enumerate(text_feat)):

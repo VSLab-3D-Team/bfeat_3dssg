@@ -27,7 +27,7 @@ dataset_config = {
   "drop_edge": 0.5,
   "drop_edge_eval": 0.0,
   "use_object_weight": False,
-  "top_k_img_num": 5
+  "top_k_img_num": 3
 }
 
 model_config = {
